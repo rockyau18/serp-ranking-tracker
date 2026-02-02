@@ -51,7 +51,7 @@ my_sites = [s.strip() for s in my_sites_input.split("\n") if s.strip()]
 st.sidebar.header("🎯 競爭對手")
 competitors_input = st.sidebar.text_area(
     "每行一個網域",
-    value="kamadelivery.com\ncateringmama.com\ncateringaway.com",
+    value="kamadelivery.com\ncateringmama.com\ncateraway.com",
     height=100
 )
 competitors = [s.strip() for s in competitors_input.split("\n") if s.strip()]
@@ -310,4 +310,5 @@ st.markdown(
     </div>
     """,
     unsafe_allow_html=True
+
 )
