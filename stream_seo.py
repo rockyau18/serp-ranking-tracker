@@ -170,6 +170,132 @@ def get_unique_sites(sites_list):
     return unique
 
 
+def get_record_display_name(record):
+    """獲取記錄的顯示名稱"""
+    date = record.get("date", "未知")
+    time_str = record.get("time", "")
+    keyword_count = len(record.get("rankings", []))
+    return f"{date} {time_str} ({keyword_count}個關鍵字)"
+
+
+def get_all_sites_from_record(record):
+    """從記錄中獲取所有網站（標準化後去重）"""
+    all_sites = []
+    seen = set()
+
+    for site in record.get("my_sites", []):
+        normalized = normalize_domain(site)
+        if normalized not in seen:
+            seen.add(normalized)
+            all_sites.append(site)
+
+    for site in record.get("competitors", []):
+        normalized = normalize_domain(site)
+        if normalized not in seen:
+            seen.add(normalized)
+            all_sites.append(site)
+
+    return all_sites
+
+
+def analyze_keyword_competition(rankings, site_a, site_b):
+    """分析兩個網站之間的關鍵字競爭"""
+    winning = []  # A 贏
+    losing = []  # A 輸
+    both_ranked = []  # 雙方都有排名
+    only_a = []  # 只有 A 有排名
+    only_b = []  # 只有 B 有排名
+    neither = []  # 都沒排名
+
+    site_a_normalized = normalize_domain(site_a)
+    site_b_normalized = normalize_domain(site_b)
+
+    for item in rankings:
+        keyword = item.get("keyword")
+
+        # 查找 site_a 的排名
+        rank_a = None
+        for key in item.keys():
+            if key != "keyword" and normalize_domain(key) == site_a_normalized:
+                rank_a = item.get(key)
+                break
+
+        # 查找 site_b 的排名
+        rank_b = None
+        for key in item.keys():
+            if key != "keyword" and normalize_domain(key) == site_b_normalized:
+                rank_b = item.get(key)
+                break
+
+        if rank_a is None and rank_b is None:
+            neither.append(keyword)
+        elif rank_a is None:
+            only_b.append({"keyword": keyword, "rank_b": rank_b})
+        elif rank_b is None:
+            only_a.append({"keyword": keyword, "rank_a": rank_a})
+        else:
+            both_ranked.append({
+                "keyword": keyword,
+                "rank_a": rank_a,
+                "rank_b": rank_b,
+                "diff": rank_b - rank_a
+            })
+            if rank_a < rank_b:
+                winning.append({"keyword": keyword, "rank_a": rank_a, "rank_b": rank_b})
+            elif rank_a > rank_b:
+                losing.append({"keyword": keyword, "rank_a": rank_a, "rank_b": rank_b})
+
+    return {
+        "winning": winning,
+        "losing": losing,
+        "both_ranked": both_ranked,
+        "only_a": only_a,
+        "only_b": only_b,
+        "neither": neither
+    }
+
+
+def analyze_site_keywords_detail(rankings, site, warning_threshold=20):
+    """分析單一網站的關鍵字詳情"""
+    site_normalized = normalize_domain(site)
+
+    details = {
+        "top3": [],
+        "top10": [],
+        "top20": [],
+        "top30": [],
+        "warning": [],
+        "na": []
+    }
+
+    for item in rankings:
+        keyword = item.get("keyword")
+
+        # 查找該網站的排名
+        rank = None
+        for key in item.keys():
+            if key != "keyword" and normalize_domain(key) == site_normalized:
+                rank = item.get(key)
+                break
+
+        if rank is None:
+            details["na"].append(keyword)
+        else:
+            if rank <= 3:
+                details["top3"].append({"keyword": keyword, "rank": rank})
+            elif rank <= 10:
+                details["top10"].append({"keyword": keyword, "rank": rank})
+            elif rank <= 20:
+                details["top20"].append({"keyword": keyword, "rank": rank})
+            elif rank <= 30:
+                details["top30"].append({"keyword": keyword, "rank": rank})
+
+            if rank > warning_threshold:
+                details["warning"].append({"keyword": keyword, "rank": rank})
+
+    return details
+
+
 # ============ 穩定版異步搜尋引擎 ============
 
 class StableSerpSearcher:
@@ -1479,11 +1605,6 @@ elif st.session_state.current_tab == 3:
     if not history_records:
         st.info("📊 還沒有數據，請先執行排名查詢")
     else:
-        latest_record = history_records[-1]
-        rankings = latest_record.get("rankings", [])
-        tracked_my_sites = latest_record.get("my_sites", [])
-        tracked_competitors = latest_record.get("competitors", [])
-
         # 分析頁面的警告閾值
         analysis_warning_threshold = st.number_input(
             "⚠️ 分析警告閾值",
@@ -1494,77 +1615,113 @@ elif st.session_state.current_tab == 3:
             key="analysis_warning_threshold"
         )
 
-        if rankings:
-            # ============ 1. 競爭分析：關鍵字爭奪（第一位）============
+        st.markdown("---")
 
-            if tracked_my_sites and tracked_competitors:
-                st.markdown("### 🥊 競爭分析：關鍵字爭奪")
+        # ============ 選擇歷史記錄 ============
+
+        st.markdown("### 📅 選擇查詢記錄")
+
+        record_options = []
+        for i, record in enumerate(reversed(history_records)):
+            record_idx = len(history_records) - 1 - i
+            display_name = get_record_display_name(record)
+            record_options.append((display_name, record_idx))
+
+        selected_record_display = st.selectbox(
+            "選擇要分析的記錄",
+            options=[opt[0] for opt in record_options],
+            key="analysis_record_select"
+        )
+
+        # 獲取選中的記錄
+        selected_record_idx = None
+        for display_name, idx in record_options:
+            if display_name == selected_record_display:
+                selected_record_idx = idx
+                break
+
+        if selected_record_idx is not None:
+            selected_record = history_records[selected_record_idx]
+            rankings = selected_record.get("rankings", [])
+            tracked_my_sites = selected_record.get("my_sites", [])
+            tracked_competitors = selected_record.get("competitors", [])
+            all_sites_in_record = get_all_sites_from_record(selected_record)
+
+            st.info(
+                f"📊 分析記錄: {selected_record.get('date', '')} {selected_record.get('time', '')} | {len(rankings)} 個關鍵字 | {len(all_sites_in_record)} 個網站")
+
+            st.markdown("---")
+
+            if rankings:
+                # ============ 1. 關鍵字爭奪分析（第一位）============
+
+                st.markdown("### 🥊 關鍵字爭奪分析")
+
+                st.markdown("**可以比較任意兩個網站之間的關鍵字表現（包括自己的網站之間）**")
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    my_site_select = st.selectbox("選擇我的網站", tracked_my_sites, key="compete_my_site")
+                    site_a = st.selectbox(
+                        "選擇網站 A",
+                        all_sites_in_record,
+                        key="compete_site_a",
+                        help="選擇第一個網站進行比較"
+                    )
                 with col2:
-                    competitor_select = st.selectbox("選擇競爭對手", tracked_competitors, key="compete_competitor")
+                    # 過濾掉已選的網站 A
+                    site_b_options = [s for s in all_sites_in_record if normalize_domain(s) != normalize_domain(site_a)]
+                    site_b = st.selectbox(
+                        "選擇網站 B",
+                        site_b_options if site_b_options else all_sites_in_record,
+                        key="compete_site_b",
+                        help="選擇第二個網站進行比較"
+                    )
 
-                if my_site_select and competitor_select:
-                    # 分析每個關鍵字的競爭情況
-                    winning = []  # 我贏
-                    losing = []  # 我輸
-                    both_ranked = []  # 雙方都有排名
-                    only_me = []  # 只有我有排名
-                    only_competitor = []  # 只有對手有排名
-                    neither = []  # 都沒排名
+                if site_a and site_b and normalize_domain(site_a) != normalize_domain(site_b):
+                    # 顯示比較類型
+                    site_a_type = "🏠 我的網站" if site_a in tracked_my_sites else "🎯 競爭對手"
+                    site_b_type = "🏠 我的網站" if site_b in tracked_my_sites else "🎯 競爭對手"
 
-                    for item in rankings:
-                        keyword = item.get("keyword")
-                        my_rank = item.get(my_site_select)
-                        comp_rank = item.get(competitor_select)
+                    st.markdown(f"""
+                    **比較：** {site_a_type} `{site_a}` **vs** {site_b_type} `{site_b}`
+                    """)
 
-                        if my_rank is None and comp_rank is None:
-                            neither.append(keyword)
-                        elif my_rank is None:
-                            only_competitor.append({"keyword": keyword, "competitor_rank": comp_rank})
-                        elif comp_rank is None:
-                            only_me.append({"keyword": keyword, "my_rank": my_rank})
-                        else:
-                            both_ranked.append({
-                                "keyword": keyword,
-                                "my_rank": my_rank,
-                                "comp_rank": comp_rank,
-                                "diff": comp_rank - my_rank
-                            })
-                            if my_rank < comp_rank:
-                                winning.append({"keyword": keyword, "my_rank": my_rank, "comp_rank": comp_rank})
-                            elif my_rank > comp_rank:
-                                losing.append({"keyword": keyword, "my_rank": my_rank, "comp_rank": comp_rank})
+                    # 分析競爭情況
+                    competition = analyze_keyword_competition(rankings, site_a, site_b)
+
+                    winning = competition["winning"]
+                    losing = competition["losing"]
+                    only_a = competition["only_a"]
+                    only_b = competition["only_b"]
+                    neither = competition["neither"]
 
                     # 顯示統計
                     stat_cols = st.columns(5)
                     with stat_cols[0]:
-                        st.metric("🏆 我贏", len(winning))
+                        st.metric(f"🏆 {site_a} 贏", len(winning))
                     with stat_cols[1]:
-                        st.metric("😢 我輸", len(losing))
+                        st.metric(f"😢 {site_a} 輸", len(losing))
                     with stat_cols[2]:
-                        st.metric("✅ 只有我", len(only_me))
+                        st.metric(f"✅ 只有 A", len(only_a))
                     with stat_cols[3]:
-                        st.metric("⚠️ 只有對手", len(only_competitor))
+                        st.metric(f"⚠️ 只有 B", len(only_b))
                     with stat_cols[4]:
                         st.metric("❌ 都沒排名", len(neither))
 
                     compete_tabs = st.tabs([
-                        f"🏆 我贏 ({len(winning)})",
-                        f"😢 我輸 ({len(losing)})",
-                        f"✅ 只有我 ({len(only_me)})",
-                        f"⚠️ 只有對手 ({len(only_competitor)})",
+                        f"🏆 A贏 ({len(winning)})",
+                        f"😢 A輸 ({len(losing)})",
+                        f"✅ 只有A ({len(only_a)})",
+                        f"⚠️ 只有B ({len(only_b)})",
                         f"❌ 都沒排名 ({len(neither)})"
                     ])
 
                     with compete_tabs[0]:
                         if winning:
-                            st.success(f"🎉 以下 {len(winning)} 個關鍵字我排名領先！")
+                            st.success(f"🎉 以下 {len(winning)} 個關鍵字 {site_a} 排名領先！")
                             win_df = pd.DataFrame(winning)
-                            win_df.columns = ["關鍵字", "我的排名", "對手排名"]
-                            win_df["優勢"] = win_df["對手排名"] - win_df["我的排名"]
+                            win_df.columns = ["關鍵字", f"{site_a} 排名", f"{site_b} 排名"]
+                            win_df["優勢"] = win_df[f"{site_b} 排名"] - win_df[f"{site_a} 排名"]
                             st.dataframe(win_df.sort_values("優勢", ascending=False), use_container_width=True,
                                          hide_index=True)
                         else:
@@ -1572,33 +1729,34 @@ elif st.session_state.current_tab == 3:
 
                     with compete_tabs[1]:
                         if losing:
-                            st.error(f"⚠️ 以下 {len(losing)} 個關鍵字需要加強！")
+                            st.error(f"⚠️ 以下 {len(losing)} 個關鍵字 {site_a} 需要加強！")
                             lose_df = pd.DataFrame(losing)
-                            lose_df.columns = ["關鍵字", "我的排名", "對手排名"]
-                            lose_df["落後"] = lose_df["我的排名"] - lose_df["對手排名"]
+                            lose_df.columns = ["關鍵字", f"{site_a} 排名", f"{site_b} 排名"]
+                            lose_df["落後"] = lose_df[f"{site_a} 排名"] - lose_df[f"{site_b} 排名"]
                             st.dataframe(lose_df.sort_values("落後", ascending=False), use_container_width=True,
                                          hide_index=True)
                         else:
                             st.success("沒有落後的關鍵字！")
 
                     with compete_tabs[2]:
-                        if only_me:
-                            st.success(f"✅ 以下 {len(only_me)} 個關鍵字只有我上榜！")
-                            only_me_df = pd.DataFrame(only_me)
-                            only_me_df.columns = ["關鍵字", "我的排名"]
-                            st.dataframe(only_me_df.sort_values("我的排名"), use_container_width=True, hide_index=True)
+                        if only_a:
+                            st.success(f"✅ 以下 {len(only_a)} 個關鍵字只有 {site_a} 上榜！")
+                            only_a_df = pd.DataFrame(only_a)
+                            only_a_df.columns = ["關鍵字", f"{site_a} 排名"]
+                            st.dataframe(only_a_df.sort_values(f"{site_a} 排名"), use_container_width=True,
+                                         hide_index=True)
                         else:
                             st.info("沒有獨佔的關鍵字")
 
                     with compete_tabs[3]:
-                        if only_competitor:
-                            st.warning(f"⚠️ 以下 {len(only_competitor)} 個關鍵字只有對手上榜！")
-                            only_comp_df = pd.DataFrame(only_competitor)
-                            only_comp_df.columns = ["關鍵字", "對手排名"]
-                            st.dataframe(only_comp_df.sort_values("對手排名"), use_container_width=True,
+                        if only_b:
+                            st.warning(f"⚠️ 以下 {len(only_b)} 個關鍵字只有 {site_b} 上榜！")
+                            only_b_df = pd.DataFrame(only_b)
+                            only_b_df.columns = ["關鍵字", f"{site_b} 排名"]
+                            st.dataframe(only_b_df.sort_values(f"{site_b} 排名"), use_container_width=True,
                                          hide_index=True)
                         else:
-                            st.success("對手沒有獨佔的關鍵字！")
+                            st.success(f"{site_b} 沒有獨佔的關鍵字！")
 
                     with compete_tabs[4]:
                         if neither:
@@ -1610,302 +1768,256 @@ elif st.session_state.current_tab == 3:
                         else:
                             st.info("所有關鍵字至少有一方有排名")
 
+                elif site_a and site_b:
+                    st.warning("⚠️ 請選擇兩個不同的網站進行比較")
+
                 st.markdown("---")
 
-            # ============ 2. 查看各網站詳細關鍵字（第二位）============
+                # ============ 2. 查看各網站詳細關鍵字（第二位）============
 
-            st.markdown("### 🔍 查看各網站詳細關鍵字")
+                st.markdown("### 🔍 查看各網站詳細關鍵字")
 
-            all_sites = tracked_my_sites + tracked_competitors
+                selected_site_detail = st.selectbox(
+                    "選擇網站查看詳細",
+                    all_sites_in_record,
+                    key="detail_site_select"
+                )
 
-            # 建立每個網站的詳細分析
-            site_keyword_details = {}
+                if selected_site_detail:
+                    details = analyze_site_keywords_detail(rankings, selected_site_detail, analysis_warning_threshold)
+                    is_my_site = selected_site_detail in tracked_my_sites
+                    site_type = "🏠 我的網站" if is_my_site else "🎯 競爭對手"
 
-            for site in all_sites:
-                site_keyword_details[site] = {
-                    "top3": [],
-                    "top10": [],
-                    "top20": [],
-                    "top30": [],
-                    "warning": [],
-                    "na": []
-                }
+                    st.markdown(f"#### {site_type}: **{selected_site_detail}**")
 
-                for item in rankings:
-                    rank = item.get(site)
-                    keyword = item.get("keyword")
+                    # 統計數據
+                    stat_cols = st.columns(6)
+                    categories_info = [
+                        ("🏆 前3名", len(details['top3']), "#10B981"),
+                        ("📄 首頁4-10", len(details['top10']), "#3B82F6"),
+                        ("📑 第2頁", len(details['top20']), "#F59E0B"),
+                        ("📋 第3頁", len(details['top30']), "#8B5CF6"),
+                        (f"⚠️ >{analysis_warning_threshold}名", len(details['warning']), "#EF4444"),
+                        ("❌ 未上榜", len(details['na']), "#6B7280")
+                    ]
 
-                    if rank is None:
-                        site_keyword_details[site]["na"].append(keyword)
-                    else:
-                        if rank <= 3:
-                            site_keyword_details[site]["top3"].append({"keyword": keyword, "rank": rank})
-                        elif rank <= 10:
-                            site_keyword_details[site]["top10"].append({"keyword": keyword, "rank": rank})
-                        elif rank <= 20:
-                            site_keyword_details[site]["top20"].append({"keyword": keyword, "rank": rank})
-                        elif rank <= 30:
-                            site_keyword_details[site]["top30"].append({"keyword": keyword, "rank": rank})
+                    for i, (label, count, color) in enumerate(categories_info):
+                        with stat_cols[i]:
+                            st.markdown(f"""
+                            <div style="text-align: center; padding: 0.5rem; background: white; border-radius: 8px; border-left: 3px solid {color};">
+                                <div style="font-size: 1.5rem; font-weight: bold; color: {color};">{count}</div>
+                                <div style="font-size: 0.75rem; color: #666;">{label}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
 
-                        if rank > analysis_warning_threshold:
-                            site_keyword_details[site]["warning"].append({"keyword": keyword, "rank": rank})
+                    detail_tabs = st.tabs([
+                        f"🏆 前3名 ({len(details['top3'])})",
+                        f"📄 首頁4-10 ({len(details['top10'])})",
+                        f"📑 第2頁11-20 ({len(details['top20'])})",
+                        f"📋 第3頁21-30 ({len(details['top30'])})",
+                        f"⚠️ >{analysis_warning_threshold}名 ({len(details['warning'])})",
+                        f"❌ 未上榜 ({len(details['na'])})"
+                    ])
 
-            selected_site_detail = st.selectbox(
-                "選擇網站查看詳細",
-                all_sites,
-                key="detail_site_select"
-            )
+                    with detail_tabs[0]:
+                        if details["top3"]:
+                            for item in sorted(details["top3"], key=lambda x: x["rank"]):
+                                st.markdown(f"**#{item['rank']}** - {item['keyword']}")
+                        else:
+                            st.info("沒有關鍵字在前3名")
 
-            if selected_site_detail:
-                details = site_keyword_details[selected_site_detail]
-                is_my_site = selected_site_detail in tracked_my_sites
-                site_type = "🏠 我的網站" if is_my_site else "🎯 競爭對手"
+                    with detail_tabs[1]:
+                        if details["top10"]:
+                            for item in sorted(details["top10"], key=lambda x: x["rank"]):
+                                st.markdown(f"**#{item['rank']}** - {item['keyword']}")
+                        else:
+                            st.info("沒有關鍵字在首頁4-10名")
 
-                st.markdown(f"#### {site_type}: **{selected_site_detail}**")
+                    with detail_tabs[2]:
+                        if details["top20"]:
+                            for item in sorted(details["top20"], key=lambda x: x["rank"]):
+                                st.markdown(f"**#{item['rank']}** - {item['keyword']}")
+                        else:
+                            st.info("沒有關鍵字在第2頁")
 
-                # 統計數據
-                stat_cols = st.columns(6)
-                categories_info = [
-                    ("🏆 前3名", len(details['top3']), "#10B981"),
-                    ("📄 首頁4-10", len(details['top10']), "#3B82F6"),
-                    ("📑 第2頁", len(details['top20']), "#F59E0B"),
-                    ("📋 第3頁", len(details['top30']), "#8B5CF6"),
-                    (f"⚠️ >{analysis_warning_threshold}名", len(details['warning']), "#EF4444"),
-                    ("❌ 未上榜", len(details['na']), "#6B7280")
-                ]
+                    with detail_tabs[3]:
+                        if details["top30"]:
+                            for item in sorted(details["top30"], key=lambda x: x["rank"]):
+                                st.markdown(f"**#{item['rank']}** - {item['keyword']}")
+                        else:
+                            st.info("沒有關鍵字在第3頁")
 
-                for i, (label, count, color) in enumerate(categories_info):
-                    with stat_cols[i]:
-                        st.markdown(f"""
-                        <div style="text-align: center; padding: 0.5rem; background: white; border-radius: 8px; border-left: 3px solid {color};">
-                            <div style="font-size: 1.5rem; font-weight: bold; color: {color};">{count}</div>
-                            <div style="font-size: 0.75rem; color: #666;">{label}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                    with detail_tabs[4]:
+                        if details["warning"]:
+                            st.warning(
+                                f"⚠️ 以下 {len(details['warning'])} 個關鍵字排名超過 {analysis_warning_threshold}：")
+                            for item in sorted(details["warning"], key=lambda x: x["rank"]):
+                                st.markdown(f"**#{item['rank']}** - {item['keyword']}")
+                        else:
+                            st.success(f"✅ 沒有關鍵字超過 {analysis_warning_threshold} 名！")
 
-                detail_tabs = st.tabs([
-                    f"🏆 前3名 ({len(details['top3'])})",
-                    f"📄 首頁4-10 ({len(details['top10'])})",
-                    f"📑 第2頁11-20 ({len(details['top20'])})",
-                    f"📋 第3頁21-30 ({len(details['top30'])})",
-                    f"⚠️ >{analysis_warning_threshold}名 ({len(details['warning'])})",
-                    f"❌ 未上榜 ({len(details['na'])})"
-                ])
+                    with detail_tabs[5]:
+                        if details["na"]:
+                            st.error(f"❌ 以下 {len(details['na'])} 個關鍵字未上榜：")
+                            # 分列顯示
+                            na_cols = st.columns(3)
+                            for idx, kw in enumerate(details["na"]):
+                                with na_cols[idx % 3]:
+                                    st.markdown(f"• {kw}")
+                        else:
+                            st.success("✅ 所有關鍵字都有排名！")
 
-                with detail_tabs[0]:
-                    if details["top3"]:
-                        for item in sorted(details["top3"], key=lambda x: x["rank"]):
-                            st.markdown(f"**#{item['rank']}** - {item['keyword']}")
-                    else:
-                        st.info("沒有關鍵字在前3名")
+                st.markdown("---")
 
-                with detail_tabs[1]:
-                    if details["top10"]:
-                        for item in sorted(details["top10"], key=lambda x: x["rank"]):
-                            st.markdown(f"**#{item['rank']}** - {item['keyword']}")
-                    else:
-                        st.info("沒有關鍵字在首頁4-10名")
+                # ============ 3. 關鍵字歷史變化（第三位）============
 
-                with detail_tabs[2]:
-                    if details["top20"]:
-                        for item in sorted(details["top20"], key=lambda x: x["rank"]):
-                            st.markdown(f"**#{item['rank']}** - {item['keyword']}")
-                    else:
-                        st.info("沒有關鍵字在第2頁")
+                st.markdown("### 📈 關鍵字排名歷史變化")
 
-                with detail_tabs[3]:
-                    if details["top30"]:
-                        for item in sorted(details["top30"], key=lambda x: x["rank"]):
-                            st.markdown(f"**#{item['rank']}** - {item['keyword']}")
-                    else:
-                        st.info("沒有關鍵字在第3頁")
-
-                with detail_tabs[4]:
-                    if details["warning"]:
-                        st.warning(f"⚠️ 以下 {len(details['warning'])} 個關鍵字排名超過 {analysis_warning_threshold}：")
-                        for item in sorted(details["warning"], key=lambda x: x["rank"]):
-                            st.markdown(f"**#{item['rank']}** - {item['keyword']}")
-                    else:
-                        st.success(f"✅ 沒有關鍵字超過 {analysis_warning_threshold} 名！")
-
-                with detail_tabs[5]:
-                    if details["na"]:
-                        st.error(f"❌ 以下 {len(details['na'])} 個關鍵字未上榜：")
-                        # 分列顯示
-                        na_cols = st.columns(3)
-                        for idx, kw in enumerate(details["na"]):
-                            with na_cols[idx % 3]:
-                                st.markdown(f"• {kw}")
-                    else:
-                        st.success("✅ 所有關鍵字都有排名！")
-
-            st.markdown("---")
-
-            # ============ 3. 關鍵字歷史變化（第三位）============
-
-            st.markdown("### 📈 關鍵字排名歷史變化")
-
-            if len(history_records) >= 2:
-                # 收集所有關鍵字和網站
-                all_keywords = set()
-                all_sites_history = set()
-                for record in history_records:
-                    for item in record.get("rankings", []):
-                        all_keywords.add(item.get("keyword"))
-                    all_sites_history.update(record.get("my_sites", []))
-                    all_sites_history.update(record.get("competitors", []))
-
-                # 標準化網站列表，合併相同網域
-                normalized_sites_map = {}  # normalized -> display name
-                for site in all_sites_history:
-                    normalized = normalize_domain(site)
-                    if normalized not in normalized_sites_map:
-                        normalized_sites_map[normalized] = site
-
-                unique_sites_for_chart = list(normalized_sites_map.values())
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    # 多選關鍵字
-                    selected_keywords = st.multiselect(
-                        "選擇關鍵字（可多選）",
-                        sorted(list(all_keywords)),
-                        default=sorted(list(all_keywords))[:3] if len(all_keywords) >= 3 else sorted(
-                            list(all_keywords)),
-                        key="analysis_keywords"
-                    )
-                with col2:
-                    selected_site_for_chart = st.selectbox(
-                        "選擇網站",
-                        sorted(unique_sites_for_chart),
-                        key="analysis_site"
-                    )
-
-                if selected_keywords and selected_site_for_chart:
-                    # 建立歷史數據
-                    chart_data = []
-                    selected_normalized = normalize_domain(selected_site_for_chart)
-
+                if len(history_records) >= 2:
+                    # 收集所有關鍵字和網站
+                    all_keywords = set()
+                    all_sites_history = set()
                     for record in history_records:
-                        date = record.get("date", "")
-                        time_str = record.get("time", "")
-                        datetime_str = f"{date} {time_str}"
-
-                        row = {"日期": datetime_str}
                         for item in record.get("rankings", []):
-                            kw = item.get("keyword")
-                            if kw in selected_keywords:
-                                # 查找匹配的網站（標準化比對）
-                                rank = None
-                                for site_key in item.keys():
-                                    if site_key != "keyword" and normalize_domain(site_key) == selected_normalized:
-                                        rank = item.get(site_key)
-                                        break
-                                row[kw] = rank
-                        chart_data.append(row)
+                            all_keywords.add(item.get("keyword"))
+                        all_sites_history.update(record.get("my_sites", []))
+                        all_sites_history.update(record.get("competitors", []))
 
-                    df_chart = pd.DataFrame(chart_data)
-                    df_chart = df_chart.set_index("日期")
+                    # 標準化網站列表，合併相同網域
+                    normalized_sites_map = {}  # normalized -> display name
+                    for site in all_sites_history:
+                        normalized = normalize_domain(site)
+                        if normalized not in normalized_sites_map:
+                            normalized_sites_map[normalized] = site
 
-                    # 顯示詳細數據表（用表格代替圖表）
-                    st.markdown("#### 📊 排名變化數據")
-                    st.dataframe(df_chart.reset_index(), use_container_width=True)
+                    unique_sites_for_chart = list(normalized_sites_map.values())
 
-                    # 計算每個關鍵字的變化
-                    st.markdown("#### 📈 排名變化統計")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        # 多選關鍵字
+                        selected_keywords = st.multiselect(
+                            "選擇關鍵字（可多選）",
+                            sorted(list(all_keywords)),
+                            default=sorted(list(all_keywords))[:3] if len(all_keywords) >= 3 else sorted(
+                                list(all_keywords)),
+                            key="analysis_keywords"
+                        )
+                    with col2:
+                        selected_site_for_chart = st.selectbox(
+                            "選擇網站",
+                            sorted(unique_sites_for_chart),
+                            key="analysis_site"
+                        )
 
-                    change_data = []
-                    for kw in selected_keywords:
-                        if kw in df_chart.columns:
-                            values = df_chart[kw].dropna()
-                            if len(values) >= 1:
-                                first_rank = values.iloc[0] if len(values) >= 1 else None
-                                last_rank = values.iloc[-1] if len(values) >= 1 else None
+                    if selected_keywords and selected_site_for_chart:
+                        # 建立歷史數據
+                        chart_data = []
+                        selected_normalized = normalize_domain(selected_site_for_chart)
 
-                                if len(values) >= 2:
-                                    change = first_rank - last_rank  # 正數表示排名上升
-                                    change_str = f"{'↑' if change > 0 else '↓' if change < 0 else '─'}{abs(int(change))}" if change != 0 else "─"
-                                else:
-                                    change_str = "─"
+                        for record in history_records:
+                            date = record.get("date", "")
+                            time_str = record.get("time", "")
+                            datetime_str = f"{date} {time_str}"
 
-                                best_rank = values.min()
-                                worst_rank = values.max()
-                                avg_rank = values.mean()
+                            row = {"日期": datetime_str}
+                            for item in record.get("rankings", []):
+                                kw = item.get("keyword")
+                                if kw in selected_keywords:
+                                    # 查找匹配的網站（標準化比對）
+                                    rank = None
+                                    for site_key in item.keys():
+                                        if site_key != "keyword" and normalize_domain(site_key) == selected_normalized:
+                                            rank = item.get(site_key)
+                                            break
+                                    row[kw] = rank
+                            chart_data.append(row)
 
-                                change_data.append({
-                                    "關鍵字": kw,
-                                    "首次排名": int(first_rank) if pd.notna(first_rank) else "N/A",
-                                    "最新排名": int(last_rank) if pd.notna(last_rank) else "N/A",
-                                    "變化": change_str,
-                                    "最佳排名": int(best_rank) if pd.notna(best_rank) else "N/A",
-                                    "最差排名": int(worst_rank) if pd.notna(worst_rank) else "N/A",
-                                    "平均排名": f"{avg_rank:.1f}" if pd.notna(avg_rank) else "N/A"
-                                })
+                        df_chart = pd.DataFrame(chart_data)
+                        df_chart = df_chart.set_index("日期")
 
-                    if change_data:
-                        df_change = pd.DataFrame(change_data)
-                        st.dataframe(df_change, use_container_width=True, hide_index=True)
-            else:
-                st.info("需要至少2次查詢記錄才能顯示歷史變化")
+                        # 顯示詳細數據表（用表格代替圖表）
+                        st.markdown("#### 📊 排名變化數據")
+                        st.dataframe(df_chart.reset_index(), use_container_width=True)
 
-            st.markdown("---")
+                        # 計算每個關鍵字的變化
+                        st.markdown("#### 📈 排名變化統計")
 
-            # ============ 4. 網站排名比較總覽（第四位）============
+                        change_data = []
+                        for kw in selected_keywords:
+                            if kw in df_chart.columns:
+                                values = df_chart[kw].dropna()
+                                if len(values) >= 1:
+                                    first_rank = values.iloc[0] if len(values) >= 1 else None
+                                    last_rank = values.iloc[-1] if len(values) >= 1 else None
 
-            st.markdown("### ⚔️ 網站排名比較總覽")
+                                    if len(values) >= 2:
+                                        change = first_rank - last_rank  # 正數表示排名上升
+                                        change_str = f"{'↑' if change > 0 else '↓' if change < 0 else '─'}{abs(int(change))}" if change != 0 else "─"
+                                    else:
+                                        change_str = "─"
 
-            comparison_data = []
+                                    best_rank = values.min()
+                                    worst_rank = values.max()
+                                    avg_rank = values.mean()
 
-            for site in all_sites:
-                site_stats = {
-                    "網站": site,
-                    "類型": "🏠 我的網站" if site in tracked_my_sites else "🎯 競爭對手",
-                    "前3名": 0,
-                    "首頁(4-10)": 0,
-                    "第2頁(11-20)": 0,
-                    "21-30名": 0,
-                    f">{analysis_warning_threshold}名": 0,
-                    "未上榜": 0,
-                    "平均排名": 0
-                }
+                                    change_data.append({
+                                        "關鍵字": kw,
+                                        "首次排名": int(first_rank) if pd.notna(first_rank) else "N/A",
+                                        "最新排名": int(last_rank) if pd.notna(last_rank) else "N/A",
+                                        "變化": change_str,
+                                        "最佳排名": int(best_rank) if pd.notna(best_rank) else "N/A",
+                                        "最差排名": int(worst_rank) if pd.notna(worst_rank) else "N/A",
+                                        "平均排名": f"{avg_rank:.1f}" if pd.notna(avg_rank) else "N/A"
+                                    })
 
-                ranks = []
-                for item in rankings:
-                    rank = item.get(site)
-
-                    if rank is None:
-                        site_stats["未上榜"] += 1
-                    else:
-                        ranks.append(rank)
-                        if rank <= 3:
-                            site_stats["前3名"] += 1
-                        elif rank <= 10:
-                            site_stats["首頁(4-10)"] += 1
-                        elif rank <= 20:
-                            site_stats["第2頁(11-20)"] += 1
-                        elif rank <= 30:
-                            site_stats["21-30名"] += 1
-
-                        if rank > analysis_warning_threshold:
-                            site_stats[f">{analysis_warning_threshold}名"] += 1
-
-                if ranks:
-                    site_stats["平均排名"] = round(sum(ranks) / len(ranks), 1)
-
-                comparison_data.append(site_stats)
-
-            df_comparison = pd.DataFrame(comparison_data)
-
-
-            def highlight_comparison(row):
-                if "我的網站" in row["類型"]:
-                    return ['background-color: #EFF6FF'] * len(row)
+                        if change_data:
+                            df_change = pd.DataFrame(change_data)
+                            st.dataframe(df_change, use_container_width=True, hide_index=True)
                 else:
-                    return ['background-color: #FFFBEB'] * len(row)
+                    st.info("需要至少2次查詢記錄才能顯示歷史變化")
+
+                st.markdown("---")
+
+                # ============ 4. 網站排名比較總覽（第四位）============
+
+                st.markdown("### ⚔️ 網站排名比較總覽")
+
+                comparison_data = []
+
+                for site in all_sites_in_record:
+                    details = analyze_site_keywords_detail(rankings, site, analysis_warning_threshold)
+
+                    # 計算平均排名
+                    all_ranks = []
+                    for cat in ["top3", "top10", "top20", "top30"]:
+                        all_ranks.extend([item["rank"] for item in details[cat]])
+
+                    avg_rank = round(sum(all_ranks) / len(all_ranks), 1) if all_ranks else "N/A"
+
+                    comparison_data.append({
+                        "網站": site,
+                        "類型": "🏠 我的網站" if site in tracked_my_sites else "🎯 競爭對手",
+                        "前3名": len(details["top3"]),
+                        "首頁(4-10)": len(details["top10"]),
+                        "第2頁(11-20)": len(details["top20"]),
+                        "21-30名": len(details["top30"]),
+                        f">{analysis_warning_threshold}名": len(details["warning"]),
+                        "未上榜": len(details["na"]),
+                        "平均排名": avg_rank
+                    })
+
+                df_comparison = pd.DataFrame(comparison_data)
 
 
-            styled_comparison = df_comparison.style.apply(highlight_comparison, axis=1)
-            st.dataframe(styled_comparison, use_container_width=True)
+                def highlight_comparison(row):
+                    if "我的網站" in row["類型"]:
+                        return ['background-color: #EFF6FF'] * len(row)
+                    else:
+                        return ['background-color: #FFFBEB'] * len(row)
+
+
+                styled_comparison = df_comparison.style.apply(highlight_comparison, axis=1)
+                st.dataframe(styled_comparison, use_container_width=True, hide_index=True)
 
 # ============ Tab 4: 管理 ============
 
@@ -1997,7 +2109,7 @@ elif st.session_state.current_tab == 4:
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666; padding: 2rem;">
-    <p>🚀 SEO 排名追蹤工具 Pro v2.4</p>
+    <p>🚀 SEO 排名追蹤工具 Pro v2.5</p>
     <p style="font-size: 0.8rem;">智能分析 | 競爭對手追蹤 | 關鍵字管理 | Powered by Serper API</p>
 </div>
 """, unsafe_allow_html=True)
