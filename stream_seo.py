@@ -109,7 +109,6 @@ class FastSerpSearcher:
                 "gl": self.region,
                 "hl": self.lang,
                 "num": 10,
-                "autocorrect": False,
                 "page": page
             }
             headers = {
@@ -980,3 +979,4 @@ st.markdown("""
     <p style="font-size: 0.8rem;">Async + Multi-threading | Powered by Serper API</p>
 </div>
 """, unsafe_allow_html=True)
+
