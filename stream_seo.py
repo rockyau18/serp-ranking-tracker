@@ -1831,13 +1831,13 @@ if active_project:
 
             if result_competitors:
                 st.markdown("### 🎯 競爭對手")
-
+            
                 for site in result_competitors:
                     analysis = analyze_site_keywords_detail(rankings, site, warning_threshold, keyword_order_map)
-
+            
                     with st.expander(f"📊 **{site}**", expanded=False):
                         cols = st.columns(6)
-
+            
                         categories = [
                             ("🏆 前3名", "top3", "#DC2626", len(analysis["top3"])),
                             ("📄 首頁(4-10)", "top10", "#F59E0B", len(analysis["top10"])),
@@ -1846,7 +1846,7 @@ if active_project:
                             (f"⚠️ >{warning_threshold}名", "warning", "#10B981", len(analysis["warning"])),
                             ("❌ 未上榜", "na", "#10B981", len(analysis["na"]))
                         ]
-
+            
                         for i, (label, key, color, count) in enumerate(categories):
                             with cols[i]:
                                 st.markdown(f"""
@@ -1855,29 +1855,53 @@ if active_project:
                                     <div style="font-size: 0.75rem; color: #666;">{label}</div>
                                 </div>
                                 """, unsafe_allow_html=True)
-
+            
                         st.markdown("---")
-
+            
+                        # ✅ 修改這裡：6 個 tabs
                         detail_tabs = st.tabs([
                             f"🏆 前3名 ({len(analysis['top3'])})",
                             f"📄 首頁 ({len(analysis['top10'])})",
+                            f"📑 第2頁 ({len(analysis['top20'])})",
+                            f"📋 第3頁 ({len(analysis['top30'])})",
+                            f"⚠️ 警告 ({len(analysis['warning'])})",
                             f"❌ 未上榜 ({len(analysis['na'])})"
                         ])
-
+            
                         with detail_tabs[0]:
                             if analysis["top3"]:
                                 st.warning("⚠️ 競爭對手在這些關鍵字排名很高：")
                                 display_keyword_list(analysis["top3"], "rank-warning")
                             else:
                                 st.success("競爭對手沒有排在前3名的關鍵字")
-
+            
                         with detail_tabs[1]:
                             if analysis["top10"]:
+                                st.warning("⚠️ 競爭對手在首頁：")
                                 display_keyword_list(analysis["top10"], "rank-top10")
                             else:
                                 st.info("競爭對手沒有排在4-10名的關鍵字")
-
+            
                         with detail_tabs[2]:
+                            if analysis["top20"]:
+                                display_keyword_list(analysis["top20"], "rank-top20")
+                            else:
+                                st.info("競爭對手沒有排在11-20名的關鍵字")
+            
+                        with detail_tabs[3]:
+                            if analysis["top30"]:
+                                display_keyword_list(analysis["top30"], "rank-top30")
+                            else:
+                                st.info("競爭對手沒有排在21-30名的關鍵字")
+            
+                        with detail_tabs[4]:
+                            if analysis["warning"]:
+                                st.success(f"✅ 競爭對手這些關鍵字排名差（>{warning_threshold}）：")
+                                display_keyword_list(analysis["warning"], "rank-warning")
+                            else:
+                                st.info("競爭對手沒有排名很差的關鍵字")
+            
+                        with detail_tabs[5]:
                             if analysis["na"]:
                                 st.success("✅ 競爭對手在這些關鍵字沒有排名：")
                                 display_keyword_list(analysis["na"], "rank-na", show_rank=False)
